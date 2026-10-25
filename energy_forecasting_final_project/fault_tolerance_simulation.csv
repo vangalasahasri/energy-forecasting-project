@@ -1,0 +1,4 @@
+Simulated_Failed_Model,Valid_Forecasts,Total_Forecasts
+SARIMAX,5381,5381
+SVR,5381,5381
+LSTM,5381,5381
