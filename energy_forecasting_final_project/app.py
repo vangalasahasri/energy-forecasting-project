@@ -411,6 +411,22 @@ for filename in extra_files:
                 pd.read_csv(file_path),
                 use_container_width=True
             )
+            import streamlit as st
+
+st.header("2-out-of-3 Decision Mechanism")
+
+check1 = st.checkbox("ML model predicts high energy usage")
+check2 = st.checkbox("Current energy exceeds the limit")
+check3 = st.checkbox("Energy trend indicates high usage")
+
+votes = sum([check1, check2, check3])
+
+st.write(f"Positive checks: {votes}/3")
+
+if votes >= 2:
+    st.error("High energy consumption alert!")
+else:
+    st.success("High consumption not confirmed.")
 
    
 
