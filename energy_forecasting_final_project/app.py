@@ -411,5 +411,43 @@ for filename in extra_files:
                 pd.read_csv(file_path),
                 use_container_width=True
             )
+            # ---------- 2-out-of-3 Decision Mechanism ----------
+
+def two_out_of_three(
+    predicted_usage,
+    current_usage,
+    recent_readings,
+    threshold
+):
+    # Condition 1: Forecast predicts high consumption
+    c1 = predicted_usage > threshold
+
+    # Condition 2: Current consumption exceeds threshold
+    c2 = current_usage > threshold
+
+    # Condition 3: Last three readings are all high
+    last_three = list(recent_readings)[-3:]
+
+    c3 = (
+        len(last_three) == 3
+        and all(value > threshold for value in last_three)
+    )
+
+    # Count positive conditions
+    positive_checks = sum([c1, c2, c3])
+
+    return {
+        "forecast_high": c1,
+        "current_high": c2,
+        "sustained_high": c3,
+        "positive_checks": positive_checks,
+        "confirmed": positive_checks >= 2,
+        "decision": (
+            "HIGH CONSUMPTION CONFIRMED"
+            if positive_checks >= 2
+            else "HIGH CONSUMPTION NOT CONFIRMED"
+        )
+    }
+            
             
             
