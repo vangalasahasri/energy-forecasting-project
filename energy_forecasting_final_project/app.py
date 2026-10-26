@@ -448,6 +448,62 @@ def two_out_of_three(
             else "HIGH CONSUMPTION NOT CONFIRMED"
         )
     }
+    # Display the 2-out-of-3 mechanism in Streamlit
+
+import streamlit as st
+
+st.header("2-out-of-3 Decision Mechanism")
+
+threshold = st.number_input(
+    "Energy consumption threshold",
+    min_value=0.0,
+    value=100.0
+)
+
+predicted_usage = st.number_input(
+    "Predicted energy consumption",
+    min_value=0.0,
+    value=120.0
+)
+
+current_usage = st.number_input(
+    "Current energy consumption",
+    min_value=0.0,
+    value=115.0
+)
+
+recent_text = st.text_input(
+    "Recent readings (comma-separated)",
+    "105, 110, 115"
+)
+
+if st.button("Evaluate consumption"):
+    try:
+        recent_readings = [
+            float(x.strip())
+            for x in recent_text.split(",")
+            if x.strip()
+        ]
+
+        result = two_out_of_three(
+            predicted_usage,
+            current_usage,
+            recent_readings,
+            threshold
+        )
+
+        st.write("Forecast high:", result["forecast_high"])
+        st.write("Current usage high:", result["current_high"])
+        st.write("Sustained usage high:", result["sustained_high"])
+        st.metric("Positive checks", f'{result["positive_checks"]}/3')
+
+        if result["confirmed"]:
+            st.success(result["decision"])
+        else:
+            st.warning(result["decision"])
+
+    except ValueError:
+        st.error("Please enter valid numeric readings.")
             
             
             
