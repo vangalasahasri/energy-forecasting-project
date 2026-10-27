@@ -1,7 +1,12 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 from pathlib import Path
+
+# ==================================================
+# 1. PAGE SETUP
+# ==================================================
 
 st.set_page_config(
     page_title="Energy Forecasting and Optimization System",
@@ -9,90 +14,217 @@ st.set_page_config(
     layout="wide"
 )
 
+DATA_DIR = Path(__file__).parent
+
 st.title("⚡ Energy Forecasting and Optimization System")
 st.write(
     "Cloud-Based Energy Consumption Forecasting "
     "and Optimization Using Machine Learning"
 )
 
-DATA_DIR = Path(__file__).parent
+st.caption(
+    "This application displays saved forecasting results, "
+    "explores energy cost optimization, and demonstrates "
+    "2-out-of-3 model voting."
+)
 
-# --------------------------------------------------
-# 1. MACHINE LEARNING MODEL COMPARISON
-# --------------------------------------------------
 
-st.header("Machine Learning Model Comparison")
+# ==================================================
+# 2. HELPER FUNCTIONS
+# ==================================================
 
-comparison_file = DATA_DIR / "three_model_comparison.csv"
+def load_csv(filename):
+    """Load a CSV file if it exists."""
+    path = DATA_DIR / filename
 
-if comparison_file.exists():
-    comparison = pd.read_csv(comparison_file)
+    if path.exists():
+        try:
+            return pd.read_csv(path)
+        except Exception as error:
+            st.error(f"Could not read {filename}: {error}")
+
+    return None
+
+
+def two_out_of_three_voting(
+    sarimax,
+    sarimax_svm,
+    lstm,
+    tolerance=5.0
+):
+    """
+    Compare three model forecasts.
+    Two forecasts agree when their symmetric percentage
+    difference is within the specified tolerance.
+    """
+
+    predictions = {
+        "SARIMAX": float(sarimax),
+        "SARIMAX + SVM": float(sarimax_svm),
+        "LSTM": float(lstm)
+    }
+
+    values = list(predictions.values())
+
+    if not all(np.isfinite(v) and v >= 0 for v in values):
+        raise ValueError(
+            "All model predictions must be finite "
+            "and non-negative."
+        )
+
+    def agree(a, b):
+        denominator = (abs(a) + abs(b)) / 2
+
+        if denominator == 0:
+            return True
+
+        percentage_difference = (
+            abs(a - b) / denominator
+        ) * 100
+
+        return percentage_difference <= tolerance
+
+    a, b, c = values
+
+    # If all three agree, use their average.
+    if agree(a, b) and agree(a, c) and agree(b, c):
+        return {
+            "forecast": float(np.mean(values)),
+            "status": "All 3 models agree",
+            "agreeing_models": list(predictions.keys()),
+            "consensus": True
+        }
+
+    # Check each possible pair.
+    pairs = [
+        (a, b, "SARIMAX", "SARIMAX + SVM"),
+        (a, c, "SARIMAX", "LSTM"),
+        (b, c, "SARIMAX + SVM", "LSTM")
+    ]
+
+    agreeing_pairs = [
+        pair for pair in pairs
+        if agree(pair[0], pair[1])
+    ]
+
+    if agreeing_pairs:
+        # Select the closest agreeing pair.
+        best_pair = min(
+            agreeing_pairs,
+            key=lambda pair: abs(pair[0] - pair[1])
+        )
+
+        x, y, model1, model2 = best_pair
+
+        return {
+            "forecast": float((x + y) / 2),
+            "status": "2-out-of-3 consensus",
+            "agreeing_models": [model1, model2],
+            "consensus": True
+        }
+
+    # No pair agrees: report median as a fallback,
+    # NOT as a successful consensus.
+    return {
+        "forecast": float(np.median(values)),
+        "status": "No consensus - median fallback",
+        "agreeing_models": [],
+        "consensus": False
+    }
+
+
+# ==================================================
+# 3. MACHINE LEARNING MODEL COMPARISON
+# ==================================================
+
+st.header("1. Machine Learning Model Comparison")
+
+comparison = load_csv("three_model_comparison.csv")
+
+if comparison is not None:
     st.dataframe(comparison, use_container_width=True)
 else:
-    st.warning("Model comparison file not found.")
+    st.warning("three_model_comparison.csv was not found.")
 
-# --------------------------------------------------
-# 2. MODEL EVALUATION METRICS
-# --------------------------------------------------
 
-st.header("Model Evaluation Metrics")
+# ==================================================
+# 4. MODEL EVALUATION METRICS
+# ==================================================
 
-metrics_file = DATA_DIR / "energy_model_metrics.csv"
+st.header("2. Model Evaluation Metrics")
 
-if metrics_file.exists():
-    metrics = pd.read_csv(metrics_file)
+metrics = load_csv("energy_model_metrics.csv")
+
+if metrics is not None:
     st.dataframe(metrics, use_container_width=True)
 else:
-    st.info("Evaluation metrics file not found.")
+    st.info("energy_model_metrics.csv was not found.")
 
-# --------------------------------------------------
-# 3. FORECAST GRAPHS
-# --------------------------------------------------
 
-st.header("Energy Forecast Graphs")
+# ==================================================
+# 5. ENERGY FORECAST GRAPHS
+# ==================================================
+
+st.header("3. Energy Forecast Graphs")
 
 for filename, heading in [
     ("energy_forecast_graph.png", "Energy Forecast"),
-    ("energy_24hour_forecast.png", "24-Hour Energy Forecast"),
+    ("energy_24hour_forecast.png", "24-Hour Energy Forecast")
 ]:
     image_path = DATA_DIR / filename
+
     if image_path.exists():
         st.subheader(heading)
         st.image(str(image_path), use_container_width=True)
+    else:
+        st.info(f"{filename} was not found.")
 
-# --------------------------------------------------
-# 4. ENERGY OPTIMIZATION
-# --------------------------------------------------
 
-st.header("⚡ Energy Cost Optimization")
+# ==================================================
+# 6. ENERGY COST OPTIMIZATION
+# ==================================================
+
+st.header("4. Energy Cost Optimization")
 
 st.write(
-    "Use your forecasted energy demand to explore how shifting "
-    "flexible consumption from expensive hours to cheaper hours "
-    "could reduce estimated electricity costs."
+    "Explore how flexible energy consumption could be shifted "
+    "from expensive hours to cheaper hours to reduce estimated "
+    "electricity costs."
 )
 
-forecast_file = DATA_DIR / "energy_24hour_forecast.csv"
+forecast = load_csv("energy_24hour_forecast.csv")
 
-if forecast_file.exists():
+if forecast is None:
+    st.warning(
+        "Add energy_24hour_forecast.csv to the application "
+        "folder to enable energy optimization."
+    )
 
-    forecast = pd.read_csv(forecast_file)
+else:
+    required_columns = [
+        "Forecast_Hour",
+        "Forecast_Load_MW"
+    ]
 
-    required_columns = ["Forecast_Hour", "Forecast_Load_MW"]
+    if not all(column in forecast.columns
+               for column in required_columns):
 
-    if not all(col in forecast.columns for col in required_columns):
         st.error(
             "The forecast CSV must contain Forecast_Hour "
             "and Forecast_Load_MW columns."
         )
+
     else:
         forecast = forecast[required_columns].copy()
 
         forecast["Forecast_Hour"] = pd.to_datetime(
-            forecast["Forecast_Hour"], errors="coerce"
+            forecast["Forecast_Hour"],
+            errors="coerce"
         )
+
         forecast["Forecast_Load_MW"] = pd.to_numeric(
-            forecast["Forecast_Load_MW"], errors="coerce"
+            forecast["Forecast_Load_MW"],
+            errors="coerce"
         )
 
         forecast = forecast.dropna(
@@ -101,30 +233,31 @@ if forecast_file.exists():
 
         forecast = forecast[
             forecast["Forecast_Load_MW"] >= 0
-        ].sort_values("Forecast_Hour").reset_index(drop=True)
+        ]
+
+        forecast = (
+            forecast.drop_duplicates(subset=["Forecast_Hour"])
+            .sort_values("Forecast_Hour")
+            .reset_index(drop=True)
+        )
 
         if forecast.empty:
             st.error("No valid forecast data is available.")
 
         else:
-            # One row represents one hourly interval.
-            forecast = forecast.drop_duplicates(
-                subset=["Forecast_Hour"]
-            ).reset_index(drop=True)
-
             if len(forecast) > 1:
                 gaps = forecast["Forecast_Hour"].diff().dropna()
+
                 if not (gaps == pd.Timedelta(hours=1)).all():
                     st.warning(
-                        "Your forecast does not contain consecutive "
-                        "hourly intervals. Results assume each row "
-                        "represents one hour."
+                        "Forecast rows are not all consecutive "
+                        "hourly intervals. Cost calculations assume "
+                        "each row represents one hour."
                     )
 
             forecast["Hour"] = forecast["Forecast_Hour"].dt.hour
 
-            # Illustrative time-of-use prices in INR per kWh.
-            # Replace these with your actual electricity tariff.
+            # Illustrative prices; replace with actual tariff.
             def default_price(hour):
                 if hour in [0, 1, 2, 3, 4, 5]:
                     return 5.0
@@ -137,11 +270,11 @@ if forecast_file.exists():
                 forecast["Hour"].apply(default_price)
             )
 
-            st.subheader("Forecast and Hourly Electricity Prices")
+            st.subheader("Forecast and Electricity Prices")
 
             st.caption(
-                "Prices below are illustrative, not live electricity "
-                "tariffs. Edit them to match your applicable tariff."
+                "Prices are illustrative INR/kWh values, "
+                "not live electricity tariffs. Edit them if needed."
             )
 
             edited = st.data_editor(
@@ -149,12 +282,15 @@ if forecast_file.exists():
                     [
                         "Forecast_Hour",
                         "Forecast_Load_MW",
-                        "Price_INR_per_kWh",
+                        "Price_INR_per_kWh"
                     ]
                 ],
                 use_container_width=True,
                 hide_index=True,
-                disabled=["Forecast_Hour", "Forecast_Load_MW"],
+                disabled=[
+                    "Forecast_Hour",
+                    "Forecast_Load_MW"
+                ],
                 column_config={
                     "Forecast_Hour": st.column_config.DatetimeColumn(
                         "Forecast Hour",
@@ -170,8 +306,8 @@ if forecast_file.exists():
                         max_value=100000.0,
                         step=0.5,
                         format="₹%.2f"
-                    ),
-                },
+                    )
+                }
             )
 
             st.subheader("Optimization Settings")
@@ -181,30 +317,25 @@ if forecast_file.exists():
                 min_value=0,
                 max_value=30,
                 value=10,
-                step=5,
-                help=(
-                    "Assumed share of each hour's forecast load that "
-                    "can be shifted. Use zero if no load is flexible."
-                ),
+                step=5
             )
 
             capacity_percent = st.slider(
-                "Extra load capacity at receiving hours (%)",
+                "Extra receiving capacity (%)",
                 min_value=0,
                 max_value=50,
                 value=20,
-                step=5,
-                help=(
-                    "Maximum additional load allowed at a receiving "
-                    "hour, as a percentage of its forecast load."
-                ),
+                step=5
             )
 
-            if st.button("Optimize Energy Schedule", type="primary"):
+            if st.button(
+                "Optimize Energy Schedule",
+                type="primary"
+            ):
+                base_load = forecast[
+                    "Forecast_Load_MW"
+                ].to_numpy(dtype=float)
 
-                base_load = forecast["Forecast_Load_MW"].to_numpy(
-                    dtype=float
-                )
                 prices = pd.to_numeric(
                     edited["Price_INR_per_kWh"],
                     errors="coerce"
@@ -214,31 +345,28 @@ if forecast_file.exists():
                     not np.isfinite(prices).all()
                     or (prices < 0).any()
                 ):
-                    st.error("Enter valid, non-negative electricity prices.")
+                    st.error(
+                        "Enter valid, non-negative electricity prices."
+                    )
 
                 elif flexible_percent == 0 or capacity_percent == 0:
                     st.info(
-                        "No load can be shifted with the selected "
-                        "settings. Increase the flexible-load and "
-                        "receiving-capacity percentages to explore "
-                        "a possible schedule."
+                        "Increase both flexibility and receiving "
+                        "capacity to explore load shifting."
                     )
 
                 else:
                     optimized_load = base_load.copy()
 
-                    # Maximum amount that may leave each hour.
                     donor_capacity = (
-                        base_load * flexible_percent / 100.0
+                        base_load * flexible_percent / 100
                     )
 
-                    # Maximum extra load that each hour can receive.
                     receiver_capacity = (
-                        base_load * capacity_percent / 100.0
+                        base_load * capacity_percent / 100
                     )
 
-                    # Try the most expensive hours first and move
-                    # flexible load only to strictly cheaper hours.
+                    # Move load from expensive to cheaper hours.
                     donors = np.argsort(-prices)
                     receivers = np.argsort(prices)
 
@@ -259,7 +387,7 @@ if forecast_file.exists():
 
                             amount = min(
                                 donor_capacity[donor],
-                                receiver_capacity[receiver],
+                                receiver_capacity[receiver]
                             )
 
                             optimized_load[donor] -= amount
@@ -272,11 +400,9 @@ if forecast_file.exists():
                         "Forecast_Hour": forecast["Forecast_Hour"],
                         "Electricity_Price_INR_per_kWh": prices,
                         "Original_Load_MW": base_load,
-                        "Optimized_Load_MW": optimized_load,
+                        "Optimized_Load_MW": optimized_load
                     })
 
-                    # Each row is assumed to represent one hour.
-                    # MW * 1000 kWh/MWh * ₹/kWh = ₹ per hour.
                     results["Original_Cost_INR"] = (
                         results["Original_Load_MW"]
                         * 1000
@@ -304,9 +430,6 @@ if forecast_file.exists():
                         if original_cost > 0 else 0
                     )
 
-                    total_original_energy = base_load.sum()
-                    total_optimized_energy = optimized_load.sum()
-
                     st.subheader("Optimization Results")
 
                     col1, col2, col3 = st.columns(3)
@@ -328,70 +451,58 @@ if forecast_file.exists():
                     )
 
                     st.write(
-                        f"Original energy: "
-                        f"{total_original_energy:,.2f} MWh"
+                        f"Original energy: {base_load.sum():,.2f} MWh"
                     )
 
                     st.write(
                         f"Optimized energy: "
-                        f"{total_optimized_energy:,.2f} MWh"
+                        f"{optimized_load.sum():,.2f} MWh"
                     )
 
                     st.caption(
-                        "This demonstration shifts flexible load "
-                        "between hourly periods while preserving total "
-                        "forecast energy. It assumes one-hour intervals "
-                        "and uses the prices and capacity limits "
-                        "entered above. Savings are estimates, not "
-                        "guaranteed actual savings. This is a simplified "
-                        "greedy scheduling heuristic, not a guarantee "
-                        "of a globally optimal solution."
+                        "This is a simplified scheduling demonstration. "
+                        "It assumes one-hour intervals, preserves total "
+                        "forecast energy, and uses the entered prices. "
+                        "Savings are estimates, not guaranteed results."
                     )
 
                     st.subheader("Original vs Optimized Load")
 
-                    chart_data = results.set_index("Forecast_Hour")[
-                        ["Original_Load_MW", "Optimized_Load_MW"]
-                    ]
-
-                    st.line_chart(chart_data)
+                    st.line_chart(
+                        results.set_index("Forecast_Hour")[
+                            ["Original_Load_MW", "Optimized_Load_MW"]
+                        ]
+                    )
 
                     st.subheader("Cost Comparison by Hour")
 
-                    cost_chart = results.set_index("Forecast_Hour")[
-                        ["Original_Cost_INR", "Optimized_Cost_INR"]
-                    ]
-
-                    st.bar_chart(cost_chart)
+                    st.bar_chart(
+                        results.set_index("Forecast_Hour")[
+                            ["Original_Cost_INR", "Optimized_Cost_INR"]
+                        ]
+                    )
 
                     st.subheader("Detailed Optimization Schedule")
 
                     st.dataframe(
                         results.round(3),
                         use_container_width=True,
-                        hide_index=True,
+                        hide_index=True
                     )
-
-                    csv_data = results.to_csv(index=False).encode("utf-8")
 
                     st.download_button(
                         "Download Optimization Results CSV",
-                        data=csv_data,
+                        data=results.to_csv(index=False).encode("utf-8"),
                         file_name="energy_optimization_results.csv",
-                        mime="text/csv",
+                        mime="text/csv"
                     )
 
-else:
-    st.warning(
-        "energy_24hour_forecast.csv was not found. "
-        "Add it to the application folder to enable optimization."
-    )
 
-# --------------------------------------------------
-# 5. ADDITIONAL ANALYSIS
-# --------------------------------------------------
+# ==================================================
+# 7. ADDITIONAL ANALYSIS
+# ==================================================
 
-st.header("Additional Analysis")
+st.header("5. Additional Analysis")
 
 extra_files = [
     "energy_forecast_results.csv",
@@ -399,111 +510,125 @@ extra_files = [
     "weather_model_comparison.csv",
     "weekday_weekend_analysis.csv",
     "five_hour_deviation_forecast.csv",
-    "fault_tolerance_simulation.csv",
+    "fault_tolerance_simulation.csv"
 ]
 
 for filename in extra_files:
-    file_path = DATA_DIR / filename
+    data = load_csv(filename)
 
-    if file_path.exists():
+    if data is not None:
         with st.expander(filename.replace("_", " ").title()):
             st.dataframe(
-                pd.read_csv(file_path),
+                data,
                 use_container_width=True
             )
-            # ---------- 2-out-of-3 Decision Mechanism ----------
 
-def two_out_of_three(
-    predicted_usage,
-    current_usage,
-    recent_readings,
-    threshold
-):
-    # Condition 1: Forecast predicts high consumption
-    c1 = predicted_usage > threshold
 
-    # Condition 2: Current consumption exceeds threshold
-    c2 = current_usage > threshold
+# ==================================================
+# 8. 2-OUT-OF-3 ML MODEL VOTING
+# ==================================================
 
-    # Condition 3: Last three readings are all high
-    last_three = list(recent_readings)[-3:]
+st.header("6. 2-out-of-3 Machine Learning Model Voting")
 
-    c3 = (
-        len(last_three) == 3
-        and all(value > threshold for value in last_three)
+st.write(
+    "This section demonstrates consensus voting between "
+    "SARIMAX, SARIMAX + SVM, and LSTM forecasts."
+)
+
+st.info(
+    "Demonstration mode: enter three predictions below. "
+    "These values are not automatically loaded from your "
+    "trained models."
+)
+
+tolerance = st.number_input(
+    "Agreement tolerance (%)",
+    min_value=0.0,
+    max_value=100.0,
+    value=5.0,
+    step=0.5
+)
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    sarimax_value = st.number_input(
+        "SARIMAX prediction (MW)",
+        min_value=0.0,
+        value=100.0,
+        key="sarimax_prediction"
     )
 
-    # Count positive conditions
-    positive_checks = sum([c1, c2, c3])
+with col2:
+    svm_value = st.number_input(
+        "SARIMAX + SVM prediction (MW)",
+        min_value=0.0,
+        value=102.0,
+        key="svm_prediction"
+    )
 
-    return {
-        "forecast_high": c1,
-        "current_high": c2,
-        "sustained_high": c3,
-        "positive_checks": positive_checks,
-        "confirmed": positive_checks >= 2,
-        "decision": (
-            "HIGH CONSUMPTION CONFIRMED"
-            if positive_checks >= 2
-            else "HIGH CONSUMPTION NOT CONFIRMED"
-        )
-    }
-    # Display the 2-out-of-3 mechanism in Streamlit
+with col3:
+    lstm_value = st.number_input(
+        "LSTM prediction (MW)",
+        min_value=0.0,
+        value=150.0,
+        key="lstm_prediction"
+    )
 
-import streamlit as st
-
-st.header("2-out-of-3 Decision Mechanism")
-
-threshold = st.number_input(
-    "Energy consumption threshold",
-    min_value=0.0,
-    value=100.0
-)
-
-predicted_usage = st.number_input(
-    "Predicted energy consumption",
-    min_value=0.0,
-    value=120.0
-)
-
-current_usage = st.number_input(
-    "Current energy consumption",
-    min_value=0.0,
-    value=115.0
-)
-
-recent_text = st.text_input(
-    "Recent readings (comma-separated)",
-    "105, 110, 115"
-)
-
-if st.button("Evaluate consumption"):
+if st.button("Run 2-out-of-3 Voting", type="primary"):
     try:
-        recent_readings = [
-            float(x.strip())
-            for x in recent_text.split(",")
-            if x.strip()
-        ]
-
-        result = two_out_of_three(
-            predicted_usage,
-            current_usage,
-            recent_readings,
-            threshold
+        result = two_out_of_three_voting(
+            sarimax_value,
+            svm_value,
+            lstm_value,
+            tolerance
         )
 
-        st.write("Forecast high:", result["forecast_high"])
-        st.write("Current usage high:", result["current_high"])
-        st.write("Sustained usage high:", result["sustained_high"])
-        st.metric("Positive checks", f'{result["positive_checks"]}/3')
+        st.subheader("Voting Results")
 
-        if result["confirmed"]:
-            st.success(result["decision"])
+        col1, col2 = st.columns(2)
+
+        col1.metric(
+            "Resulting Forecast",
+            f'{result["forecast"]:.2f} MW'
+        )
+
+        col2.metric(
+            "Models Agreeing",
+            f'{len(result["agreeing_models"])}/3'
+        )
+
+        st.write("Status:", result["status"])
+
+        if result["consensus"]:
+            st.success(
+                "Consensus reached between: "
+                + ", ".join(result["agreeing_models"])
+            )
         else:
-            st.warning(result["decision"])
+            st.warning(
+                "No two models agreed within the selected tolerance. "
+                "The median is displayed only as a fallback, "
+                "not as a successful consensus."
+            )
 
-    except ValueError:
-        st.error("Please enter valid numeric readings.")
-            
-            
-            
+    except ValueError as error:
+        st.error(str(error))
+
+
+# ==================================================
+# END OF APPLICATION
+# ==================================================
+
+
+
+
+
+
+
+           
+
+                
+
+               
+                
