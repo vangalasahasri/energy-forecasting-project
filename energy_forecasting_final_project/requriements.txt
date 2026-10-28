@@ -1,2 +1,5 @@
 streamlit
 pandas
+boto3
+azure-storage-blob
+google-cloud-storage
