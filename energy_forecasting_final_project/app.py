@@ -3,12 +3,6 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-# Multi-cloud storage libraries
-import boto3
-from azure.storage.blob import BlobServiceClient
-from google.cloud import storage
-from google.oauth2 import service_account
-
 # ==================================================
 # 1. PAGE SETUP
 # ==================================================
@@ -370,6 +364,7 @@ else:
 
                     for donor in donors:
                         for receiver in receivers:
+
                             if prices[receiver] >= prices[donor]:
                                 break
 
@@ -412,8 +407,14 @@ else:
                         * results["Electricity_Price_INR_per_kWh"]
                     )
 
-                    original_cost = results["Original_Cost_INR"].sum()
-                    optimized_cost = results["Optimized_Cost_INR"].sum()
+                    original_cost = results[
+                        "Original_Cost_INR"
+                    ].sum()
+
+                    optimized_cost = results[
+                        "Optimized_Cost_INR"
+                    ].sum()
+
                     savings = original_cost - optimized_cost
 
                     savings_percent = (
@@ -446,7 +447,8 @@ else:
                     )
 
                     st.write(
-                        f"Optimized energy: {optimized_load.sum():,.2f} MWh"
+                        f"Optimized energy: "
+                        f"{optimized_load.sum():,.2f} MWh"
                     )
 
                     st.caption(
@@ -486,7 +488,9 @@ else:
                         file_name="energy_optimization_results.csv",
                         mime="text/csv"
                     )
-                    # ==================================================
+
+
+# ==================================================
 # 7. ADDITIONAL ANALYSIS
 # ==================================================
 
@@ -506,7 +510,10 @@ for filename in extra_files:
 
     if data is not None:
         with st.expander(filename.replace("_", " ").title()):
-            st.dataframe(data, use_container_width=True)
+            st.dataframe(
+                data,
+                use_container_width=True
+            )
 
 
 # ==================================================
@@ -601,591 +608,431 @@ if st.button("Run 2-out-of-3 Voting", type="primary"):
         st.error(str(error))
 
 
-# =====================================================
+
+# =========================================================
 # 9. ACTUAL FORECAST CORRECTION IMPLEMENTATION
-# =====================================================
+# =========================================================
 
 st.header("7. Corrected Energy Forecast")
 
-correction_data = load_csv("energy_forecast_results.csv")
+st.write(
+    "Enter forecast values and historical errors to calculate "
+    "deviation, trend, weekend, and holiday corrections."
+)
 
-if correction_data is None:
-    correction_data = load_csv("energy_24hour_forecast.csv")
+# ---------------------------------------------------------
+# 1. INPUT VALUES
+# ---------------------------------------------------------
 
-if correction_data is None:
-    st.error("Forecast CSV file not found.")
-else:
-    st.write("Select the columns from your actual forecast data.")
+st.subheader("1. Enter Forecast Values")
 
-    prediction_candidates = [
-        c for c in correction_data.columns
-        if any(
-            word in c.lower()
-            for word in ["forecast", "prediction", "predicted"]
+col1, col2 = st.columns(2)
+
+with col1:
+    original_forecast = st.number_input(
+        "Original predicted energy consumption",
+        min_value=0.0,
+        value=100.0,
+        step=1.0,
+        key="s9_original_forecast"
+    )
+
+with col2:
+    actual_consumption = st.number_input(
+        "Actual energy consumption",
+        min_value=0.0,
+        value=120.0,
+        step=1.0,
+        key="s9_actual_consumption"
+    )
+
+# ---------------------------------------------------------
+# 2. HISTORICAL ERROR INPUTS
+# ---------------------------------------------------------
+
+st.subheader("2. Enter Historical Forecast Errors")
+
+previous_errors_text = st.text_input(
+    "Previous forecast errors",
+    value="15, 10, 5",
+    key="s9_previous_errors",
+    help="Enter actual minus predicted values, separated by commas."
+)
+
+weekend_errors_text = st.text_input(
+    "Previous weekend errors",
+    value="8, 6, 4",
+    key="s9_weekend_errors"
+)
+
+holiday_errors_text = st.text_input(
+    "Previous holiday errors",
+    value="12, 8, 10",
+    key="s9_holiday_errors"
+)
+
+col3, col4 = st.columns(2)
+
+with col3:
+    is_weekend = st.checkbox(
+        "Is the forecast date a weekend?",
+        value=False,
+        key="s9_is_weekend"
+    )
+
+with col4:
+    is_holiday = st.checkbox(
+        "Is the forecast date a holiday?",
+        value=False,
+        key="s9_is_holiday"
+    )
+
+holiday_coefficient = st.number_input(
+    "Holiday coefficient",
+    min_value=0.0,
+    max_value=5.0,
+    value=1.0,
+    step=0.1,
+    key="s9_holiday_coefficient",
+    help="This is a user-entered coefficient, not automatically learned."
+)
+
+# ---------------------------------------------------------
+# 3. CONVERT INPUTS INTO NUMBERS
+# ---------------------------------------------------------
+
+def parse_error_values(text_value):
+    if not text_value.strip():
+        return []
+
+    values = []
+
+    for item in text_value.split(","):
+        item = item.strip()
+
+        if item:
+            number = float(item)
+
+            if not np.isfinite(number):
+                raise ValueError(
+                    "Enter only finite numeric error values."
+                )
+
+            values.append(number)
+
+    return values
+
+
+try:
+    previous_errors = parse_error_values(
+        previous_errors_text
+    )
+
+    weekend_errors = parse_error_values(
+        weekend_errors_text
+    )
+
+    holiday_errors = parse_error_values(
+        holiday_errors_text
+    )
+
+    if len(previous_errors) == 0:
+        st.warning(
+            "Enter at least one previous forecast error."
         )
-    ]
 
-    actual_candidates = [
-        c for c in correction_data.columns
-        if any(
-            word in c.lower()
-            for word in ["actual", "observed", "measured"]
-        )
-    ]
-
-    date_candidates = [
-        c for c in correction_data.columns
-        if any(
-            word in c.lower()
-            for word in ["date", "time", "timestamp"]
-        )
-    ]
-
-    if not prediction_candidates:
-        st.error(
-            "No forecast/prediction column was found. Your CSV columns are: "
-            + ", ".join(correction_data.columns)
-        )
     else:
-        prediction_col = st.selectbox(
-            "Forecast column",
-            prediction_candidates,
-            key="correction_prediction_col"
+        # -------------------------------------------------
+        # 4. DEVIATION CORRECTION
+        # -------------------------------------------------
+
+        deviation_correction = float(
+            np.mean(previous_errors)
         )
 
-        actual_col = None
+        # -------------------------------------------------
+        # 5. TREND CORRECTION
+        # -------------------------------------------------
 
-        if actual_candidates:
-            actual_choice = st.selectbox(
-                "Actual consumption column",
-                ["Not available"] + actual_candidates,
-                key="correction_actual_col"
+        if len(previous_errors) >= 2:
+            x = np.arange(
+                len(previous_errors),
+                dtype=float
             )
 
-            if actual_choice != "Not available":
-                actual_col = actual_choice
-
-        date_col = None
-
-        if date_candidates:
-            date_choice = st.selectbox(
-                "Date/time column",
-                ["No date column"] + date_candidates,
-                key="correction_date_col"
+            slope, intercept = np.polyfit(
+                x,
+                np.asarray(previous_errors, dtype=float),
+                1
             )
 
-            if date_choice != "No date column":
-                date_col = date_choice
-
-        result = correction_data.copy()
-
-        result["Original_Forecast"] = pd.to_numeric(
-            result[prediction_col],
-            errors="coerce"
-        )
-
-        if date_col is not None:
-            result[date_col] = pd.to_datetime(
-                result[date_col],
-                errors="coerce"
-            )
-
-            result = result.sort_values(
-                date_col,
-                na_position="last"
-            ).reset_index(drop=True)
-
-        result["Deviation_Correction"] = 0.0
-        result["Trend_Correction"] = 0.0
-        result["Weekend_Correction"] = 0.0
-        result["Corrected_Forecast"] = result["Original_Forecast"]
-
-        if actual_col is None:
-            st.warning(
-                "Actual consumption values are missing. The app cannot "
-                "calculate real historical forecast errors. Upload data "
-                "containing both actual and predicted consumption to "
-                "enable error correction."
+            # Estimate the next error using the fitted trend.
+            trend_correction = float(
+                slope * len(previous_errors) + intercept
             )
         else:
-            result["Actual_Consumption"] = pd.to_numeric(
-                result[actual_col],
-                errors="coerce"
+            trend_correction = 0.0
+
+        # -------------------------------------------------
+        # 6. WEEKEND CORRECTION
+        # -------------------------------------------------
+
+        if is_weekend and len(weekend_errors) > 0:
+            weekend_correction = float(
+                np.mean(weekend_errors)
+            )
+        else:
+            weekend_correction = 0.0
+
+        # -------------------------------------------------
+        # 7. HOLIDAY COEFFICIENT CORRECTION
+        # -------------------------------------------------
+
+        if is_holiday and len(holiday_errors) > 0:
+            holiday_error_mean = float(
+                np.mean(holiday_errors)
             )
 
-            result["Forecast_Error"] = (
-                result["Actual_Consumption"]
-                - result["Original_Forecast"]
+            holiday_correction = (
+                holiday_coefficient * holiday_error_mean
+            )
+        else:
+            holiday_error_mean = 0.0
+            holiday_correction = 0.0
+
+        # -------------------------------------------------
+        # 8. CALCULATE FINAL CORRECTED FORECAST
+        # -------------------------------------------------
+
+        total_correction = (
+            deviation_correction
+            + trend_correction
+            + weekend_correction
+            + holiday_correction
+        )
+
+        corrected_forecast = max(
+            0.0,
+            original_forecast + total_correction
+        )
+
+        # Actual consumption is used for evaluation only.
+        # It is not used to calculate its own forecast correction.
+        current_forecast_error = (
+            actual_consumption - original_forecast
+        )
+
+        original_absolute_error = abs(
+            actual_consumption - original_forecast
+        )
+
+        corrected_absolute_error = abs(
+            actual_consumption - corrected_forecast
+        )
+
+        if original_absolute_error > 0:
+            improvement_percent = (
+                (
+                    original_absolute_error
+                    - corrected_absolute_error
+                )
+                / original_absolute_error
+            ) * 100
+        else:
+            improvement_percent = 0.0
+
+        # -------------------------------------------------
+        # 9. DISPLAY CALCULATED CORRECTION VALUES
+        # -------------------------------------------------
+
+        st.divider()
+        st.subheader("Calculated Correction Values")
+
+        c1, c2 = st.columns(2)
+        c3, c4 = st.columns(2)
+
+        c1.metric(
+            "Deviation Correction",
+            f"{deviation_correction:.4f}"
+        )
+
+        c2.metric(
+            "Trend Correction",
+            f"{trend_correction:.4f}"
+        )
+
+        c3.metric(
+            "Weekend Correction",
+            f"{weekend_correction:.4f}"
+        )
+
+        c4.metric(
+            "Holiday Correction",
+            f"{holiday_correction:.4f}"
+        )
+
+        st.metric(
+            "Holiday Coefficient",
+            f"{holiday_coefficient:.2f}"
+        )
+
+        # -------------------------------------------------
+        # 10. SHOW CALCULATION
+        # -------------------------------------------------
+
+        st.subheader("Final Forecast Calculation")
+
+        st.write(
+            f"Original forecast: {original_forecast:.4f}"
+        )
+
+        st.write(
+            f"Deviation correction: "
+            f"{deviation_correction:.4f}"
+        )
+
+        st.write(
+            f"Trend correction: {trend_correction:.4f}"
+        )
+
+        st.write(
+            f"Weekend correction: {weekend_correction:.4f}"
+        )
+
+        st.write(
+            f"Holiday correction: {holiday_correction:.4f}"
+        )
+
+        st.write(
+            f"Total correction: {total_correction:.4f}"
+        )
+
+        st.success(
+            f"Corrected forecast: {corrected_forecast:.4f}"
+        )
+
+        # -------------------------------------------------
+        # 11. EVALUATE FORECAST ERROR
+        # -------------------------------------------------
+
+        st.subheader("Forecast Error Evaluation")
+
+        e1, e2, e3 = st.columns(3)
+
+        e1.metric(
+            "Current Forecast Error",
+            f"{current_forecast_error:.4f}"
+        )
+
+        e2.metric(
+            "Original Absolute Error",
+            f"{original_absolute_error:.4f}"
+        )
+
+        e3.metric(
+            "Corrected Absolute Error",
+            f"{corrected_absolute_error:.4f}"
+        )
+
+        st.metric(
+            "Absolute Error Improvement (%)",
+            f"{improvement_percent:.2f}%"
+        )
+
+        if corrected_absolute_error < original_absolute_error:
+            st.success(
+                "The corrected forecast is closer to the entered "
+                "actual value for this example."
+            )
+        elif corrected_absolute_error > original_absolute_error:
+            st.warning(
+                "The correction increased the error for this example."
+            )
+        else:
+            st.info(
+                "The absolute error did not change."
             )
 
-            valid_error_count = result["Forecast_Error"].notna().sum()
+        # -------------------------------------------------
+        # 12. RESULTS TABLE
+        # -------------------------------------------------
 
-            if valid_error_count < 3:
-                st.warning(
-                    "At least 3 rows with actual and predicted values "
-                    "are recommended for correction."
-                )
-            else:
-                previous_errors = result["Forecast_Error"].shift(1)
-
-                # A. Deviation correction
-                result["Deviation_Correction"] = (
-                    previous_errors
-                    .rolling(window=24, min_periods=3)
-                    .mean()
-                    .fillna(0)
-                )
-
-                # B. Trend correction
-                def calculate_error_trend(values):
-                    values = np.asarray(values, dtype=float)
-                    values = values[np.isfinite(values)]
-
-                    if len(values) < 5:
-                        return 0.0
-
-                    x = np.arange(len(values))
-
-                    return float(
-                        np.polyfit(x, values, 1)[0]
-                    )
-
-                trend_values = []
-
-                for i in range(len(result)):
-                    start = max(0, i - 24)
-
-                    past_errors = (
-                        result["Forecast_Error"]
-                        .iloc[start:i]
-                        .dropna()
-                    )
-
-                    trend_values.append(
-                        calculate_error_trend(past_errors)
-                    )
-
-                result["Trend_Correction"] = trend_values
-
-                # C. Weekend correction
-                if date_col is not None:
-                    is_weekend = (
-                        result[date_col].dt.dayofweek >= 5
-                    )
-
-                    weekend_errors = result["Forecast_Error"].where(
-                        is_weekend
-                    )
-
-                    result["Weekend_Correction"] = (
-                        weekend_errors
-                        .shift(1)
-                        .expanding(min_periods=3)
-                        .mean()
-                        .fillna(0)
-                    )
-
-                # D. Combine corrections
-                result["Corrected_Forecast"] = (
-                    result["Original_Forecast"]
-                    + result["Deviation_Correction"]
-                    + result["Trend_Correction"]
-                    + result["Weekend_Correction"]
-                ).clip(lower=0)
-
-                st.success(
-                    "Deviation, error-trend and available weekend "
-                    "corrections have been calculated."
-                )
-
-                evaluation = result.dropna(
-                    subset=[
-                        "Actual_Consumption",
-                        "Original_Forecast",
-                        "Corrected_Forecast"
-                    ]
-                )
-
-                if not evaluation.empty:
-                    original_mae = np.mean(
-                        np.abs(
-                            evaluation["Actual_Consumption"]
-                            - evaluation["Original_Forecast"]
-                        )
-                    )
-
-                    corrected_mae = np.mean(
-                        np.abs(
-                            evaluation["Actual_Consumption"]
-                            - evaluation["Corrected_Forecast"]
-                        )
-                    )
-
-                    col1, col2, col3 = st.columns(3)
-
-                    col1.metric("Original MAE", f"{original_mae:.4f}")
-                    col2.metric("Corrected MAE", f"{corrected_mae:.4f}")
-
-                    improvement = (
-                        (original_mae - corrected_mae)
-                        / original_mae * 100
-                        if original_mae > 0 else 0
-                    )
-
-                    col3.metric(
-                        "MAE Improvement (%)",
-                        f"{improvement:.2f}%"
-                    )
-
-                    if corrected_mae < original_mae:
-                        st.success(
-                            "Correction reduced the MAE on these rows."
-                        )
-                    else:
-                        st.warning(
-                            "Correction did not improve MAE on these rows. "
-                            "Validate it using a separate test dataset."
-                        )
-
-        st.subheader("Forecast Correction Results")
-
-        display_cols = [
-            c for c in [
-                date_col,
-                "Actual_Consumption",
-                "Original_Forecast",
-                "Forecast_Error",
-                "Deviation_Correction",
-                "Trend_Correction",
-                "Weekend_Correction",
-                "Corrected_Forecast"
+        results = pd.DataFrame({
+            "Measurement": [
+                "Original Forecast",
+                "Deviation Correction",
+                "Trend Correction",
+                "Weekend Correction",
+                "Holiday Correction",
+                "Holiday Coefficient",
+                "Total Correction",
+                "Corrected Forecast",
+                "Actual Consumption",
+                "Current Forecast Error",
+                "Original Absolute Error",
+                "Corrected Absolute Error"
+            ],
+            "Calculated_Value": [
+                original_forecast,
+                deviation_correction,
+                trend_correction,
+                weekend_correction,
+                holiday_correction,
+                holiday_coefficient,
+                total_correction,
+                corrected_forecast,
+                actual_consumption,
+                current_forecast_error,
+                original_absolute_error,
+                corrected_absolute_error
             ]
-            if c is not None and c in result.columns
-        ]
+        })
+
+        st.subheader("Calculated Results Table")
 
         st.dataframe(
-            result[display_cols],
-            use_container_width=True
+            results.round(4),
+            use_container_width=True,
+            hide_index=True
         )
 
-        st.subheader("Original Forecast vs Corrected Forecast")
+        # -------------------------------------------------
+        # 13. FORECAST COMPARISON CHART
+        # -------------------------------------------------
 
-        chart_data = result[
-            ["Original_Forecast", "Corrected_Forecast"]
-        ].copy()
+        chart_data = pd.DataFrame({
+            "Energy Consumption": [
+                original_forecast,
+                corrected_forecast,
+                actual_consumption
+            ]
+        }, index=[
+            "Original Forecast",
+            "Corrected Forecast",
+            "Actual Consumption"
+        ])
 
-        if date_col is not None:
-            chart_data.index = result[date_col]
+        st.subheader("Forecast Comparison")
+        st.bar_chart(chart_data)
 
-        st.line_chart(chart_data)
-
-        if "Actual_Consumption" in result.columns:
-            actual_chart = result[
-                [
-                    "Actual_Consumption",
-                    "Original_Forecast",
-                    "Corrected_Forecast"
-                ]
-            ].copy()
-
-            if date_col is not None:
-                actual_chart.index = result[date_col]
-
-            st.subheader("Actual vs Original vs Corrected")
-            st.line_chart(actual_chart)
+        # -------------------------------------------------
+        # 14. DOWNLOAD RESULTS
+        # -------------------------------------------------
 
         st.download_button(
-            "Download Corrected Forecast CSV",
-            data=result.to_csv(index=False).encode("utf-8"),
+            "Download Correction Results CSV",
+            data=results.to_csv(index=False).encode("utf-8"),
             file_name="corrected_energy_forecast.csv",
             mime="text/csv",
-            key="download_actual_corrected_forecast"
-        )
-        # ==================================================
-# 10. MULTI-CLOUD STORAGE: AWS, AZURE, GOOGLE CLOUD
-# ==================================================
-
-st.header("8. Multi-Cloud Storage")
-
-st.write(
-    "Upload, list, and download energy-data CSV files using "
-    "AWS S3, Azure Blob Storage, or Google Cloud Storage."
-)
-
-st.info(
-    "Configure valid credentials and bucket/container names "
-    "in Streamlit Secrets before using these cloud operations. "
-    "This section handles cloud file storage; it does not "
-    "automatically deploy forecasting models to each cloud."
-)
-
-cloud_provider = st.selectbox(
-    "Cloud platform",
-    [
-        "AWS S3",
-        "Azure Blob Storage",
-        "Google Cloud Storage"
-    ],
-    key="multi_cloud_provider"
-)
-
-cloud_operation = st.radio(
-    "Operation",
-    [
-        "Upload CSV",
-        "List stored files",
-        "Download CSV"
-    ],
-    horizontal=True,
-    key="multi_cloud_operation"
-)
-
-
-# ---------- AWS S3 CONNECTION ----------
-
-def _aws_client():
-    """Create an AWS S3 client from Streamlit Secrets."""
-    return boto3.client(
-        "s3",
-        aws_access_key_id=st.secrets["aws"]["access_key_id"],
-        aws_secret_access_key=st.secrets["aws"]["secret_access_key"],
-        region_name=st.secrets["aws"]["region"],
-    )
-
-
-# ---------- AZURE BLOB STORAGE CONNECTION ----------
-
-def _azure_container():
-    """Create an Azure Blob container client."""
-    service = BlobServiceClient.from_connection_string(
-        st.secrets["azure"]["connection_string"]
-    )
-
-    return service.get_container_client(
-        st.secrets["azure"]["container"]
-    )
-
-
-# ---------- GOOGLE CLOUD STORAGE CONNECTION ----------
-
-def _gcp_bucket():
-    """Create a Google Cloud Storage bucket client."""
-    credentials_info = dict(
-        st.secrets["gcp_service_account"]
-    )
-
-    credentials = (
-        service_account.Credentials.from_service_account_info(
-            credentials_info
-        )
-    )
-
-    client = storage.Client(
-        project=st.secrets["gcp"]["project_id"],
-        credentials=credentials,
-    )
-
-    return client.bucket(
-        st.secrets["gcp"]["bucket"]
-    )
-
-
-# ---------- LIST FILES IN SELECTED CLOUD ----------
-
-def _list_cloud_files(provider):
-    """Return file names in the selected cloud location."""
-
-    if provider == "AWS S3":
-        client = _aws_client()
-
-        response = client.list_objects_v2(
-            Bucket=st.secrets["aws"]["bucket"]
+            key="s9_download_results"
         )
 
-        return [
-            item["Key"]
-            for item in response.get("Contents", [])
-        ]
-
-    elif provider == "Azure Blob Storage":
-        return [
-            item.name
-            for item in _azure_container().list_blobs()
-        ]
-
-    else:
-        return [
-            item.name
-            for item in _gcp_bucket().list_blobs()
-        ]
-
-
-# ==================================================
-# CLOUD FILE UPLOAD
-# ==================================================
-
-if cloud_operation == "Upload CSV":
-
-    cloud_file = st.file_uploader(
-        "Choose a CSV file to upload",
-        type=["csv"],
-        key="multi_cloud_upload_file",
+except (ValueError, TypeError):
+    st.error(
+        "Invalid input. Enter numeric errors separated by commas, "
+        "for example: 15, 10, 5."
     )
 
-    if st.button(
-        "Upload to selected cloud",
-        key="multi_cloud_upload_button"
-    ):
-
-        if cloud_file is None:
-            st.warning("Please select a CSV file first.")
-
-        else:
-            try:
-                filename = Path(cloud_file.name).name
-                file_bytes = cloud_file.getvalue()
-
-                if cloud_provider == "AWS S3":
-
-                    _aws_client().put_object(
-                        Bucket=st.secrets["aws"]["bucket"],
-                        Key=filename,
-                        Body=file_bytes,
-                        ContentType="text/csv",
-                    )
-
-                elif cloud_provider == "Azure Blob Storage":
-
-                    _azure_container().upload_blob(
-                        name=filename,
-                        data=file_bytes,
-                        overwrite=True,
-                    )
-
-                else:
-
-                    _gcp_bucket().blob(
-                        filename
-                    ).upload_from_string(
-                        file_bytes,
-                        content_type="text/csv",
-                    )
-
-                st.success(
-                    f"Uploaded '{filename}' to {cloud_provider}."
-                )
-
-            except Exception as error:
-                st.error(f"Cloud upload failed: {error}")
-
-
-# ==================================================
-# LIST CLOUD FILES
-# ==================================================
-
-elif cloud_operation == "List stored files":
-
-    if st.button(
-        "List cloud files",
-        key="multi_cloud_list_button"
-    ):
-
-        try:
-            cloud_files = _list_cloud_files(
-                cloud_provider
-            )
-
-            if cloud_files:
-                st.dataframe(
-                    pd.DataFrame({
-                        "Stored filename": cloud_files
-                    }),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            else:
-                st.info(
-                    "No files were found in this cloud location."
-                )
-
-        except Exception as error:
-            st.error(
-                f"Could not list cloud files: {error}"
-            )
-
-
-# ==================================================
-# DOWNLOAD CLOUD FILE
-# ==================================================
-
-else:
-
-    filename_to_download = st.text_input(
-        "Enter the exact CSV filename",
-        key="multi_cloud_download_filename",
-    ).strip()
-
-    if st.button(
-        "Prepare cloud download",
-        key="multi_cloud_download_button"
-    ):
-
-        if not filename_to_download:
-            st.warning("Enter a filename first.")
-
-        else:
-            try:
-                if (
-                    Path(filename_to_download).name
-                    != filename_to_download
-                ):
-                    raise ValueError(
-                        "Enter only the filename, not a folder path."
-                    )
-
-                if not filename_to_download.lower().endswith(".csv"):
-                    raise ValueError(
-                        "Only CSV downloads are supported."
-                    )
-
-                if cloud_provider == "AWS S3":
-
-                    response = _aws_client().get_object(
-                        Bucket=st.secrets["aws"]["bucket"],
-                        Key=filename_to_download,
-                    )
-
-                    download_bytes = response["Body"].read()
-
-                elif cloud_provider == "Azure Blob Storage":
-
-                    download_bytes = (
-                        _azure_container()
-                        .get_blob_client(
-                            filename_to_download
-                        )
-                        .download_blob()
-                        .readall()
-                    )
-
-                else:
-
-                    download_bytes = (
-                        _gcp_bucket()
-                        .blob(filename_to_download)
-                        .download_as_bytes()
-                    )
-
-                st.download_button(
-                    "Save CSV to this computer",
-                    data=download_bytes,
-                    file_name=filename_to_download,
-                    mime="text/csv",
-                    key="multi_cloud_save_download_button",
-                )
-
-            except Exception as error:
-                st.error(
-                    f"Cloud download failed: {error}"
-                )
+# =========================================================
+# END OF SECTION 9
+# =========================================================
