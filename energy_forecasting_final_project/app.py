@@ -611,329 +611,361 @@ if st.button("Run 2-out-of-3 Voting", type="primary"):
 # =====================================================
 # 9. ACTUAL FORECAST CORRECTION IMPLEMENTATION
 # =====================================================
+# =========================================================
+# 9. WORKING FORECAST CORRECTION WITH USER INPUTS
+# =========================================================
 
 st.header("7. Corrected Energy Forecast")
 
-correction_data = load_csv("energy_forecast_results.csv")
+st.write(
+    "Enter your forecast and historical error values. "
+    "The application will calculate each correction and "
+    "the final corrected forecast."
+)
 
-if correction_data is None:
-    correction_data = load_csv("energy_24hour_forecast.csv")
+# ---------------------------------------------------------
+# INPUT 1: CURRENT FORECAST VALUES
+# ---------------------------------------------------------
 
-if correction_data is None:
-    st.error("Forecast CSV file not found.")
+st.subheader("1. Enter Forecast Values")
 
-else:
-    st.write("Select the columns from your actual forecast data.")
+col1, col2 = st.columns(2)
 
-    prediction_candidates = [
-        c for c in correction_data.columns
-        if any(
-            word in c.lower()
-            for word in ["forecast", "prediction", "predicted"]
-        )
-    ]
+with col1:
+    original_forecast = st.number_input(
+        "Original predicted energy consumption",
+        min_value=0.0,
+        value=100.0,
+        step=1.0,
+        key="correction_original_forecast"
+    )
 
-    actual_candidates = [
-        c for c in correction_data.columns
-        if any(
-            word in c.lower()
-            for word in ["actual", "observed", "measured"]
-        )
-    ]
+with col2:
+    actual_consumption = st.number_input(
+        "Actual energy consumption (optional, for evaluation)",
+        min_value=0.0,
+        value=120.0,
+        step=1.0,
+        key="correction_actual_consumption"
+    )
 
-    date_candidates = [
-        c for c in correction_data.columns
-        if any(
-            word in c.lower()
-            for word in ["date", "time", "timestamp"]
-        )
-    ]
+# ---------------------------------------------------------
+# INPUT 2: HISTORICAL FORECAST ERRORS
+# ---------------------------------------------------------
 
-    if not prediction_candidates:
-        st.error(
-            "No forecast/prediction column was found. "
-            "Your CSV columns are: "
-            + ", ".join(correction_data.columns)
+st.subheader("2. Enter Previous Forecast Errors")
+
+st.write(
+    "Enter previous forecast errors separated by commas. "
+    "Calculate each error as Actual Consumption minus "
+    "Predicted Consumption."
+)
+
+previous_errors_text = st.text_input(
+    "Previous errors",
+    value="15, 10, 5",
+    key="previous_forecast_errors",
+    help="Example: 15, 10, 5, -2, 4"
+)
+
+weekend_errors_text = st.text_input(
+    "Previous weekend errors (optional)",
+    value="8, 6, 4",
+    key="previous_weekend_errors",
+    help="Example: 8, 6, 4"
+)
+
+is_weekend = st.checkbox(
+    "Apply weekend-specific correction",
+    value=False,
+    key="apply_weekend_correction"
+)
+
+
+# ---------------------------------------------------------
+# INPUT VALIDATION
+# ---------------------------------------------------------
+
+def parse_errors(text_value):
+    """Convert comma-separated error values into a numeric list."""
+
+    if not text_value.strip():
+        return []
+
+    values = []
+
+    for item in text_value.split(","):
+        item = item.strip()
+
+        if not item:
+            continue
+
+        value = float(item)
+
+        if not np.isfinite(value):
+            raise ValueError(
+                "Please enter only finite numeric error values."
+            )
+
+        values.append(value)
+
+    return values
+
+
+# ---------------------------------------------------------
+# CALCULATE CORRECTIONS
+# ---------------------------------------------------------
+
+try:
+    previous_errors = parse_errors(previous_errors_text)
+    weekend_errors = parse_errors(weekend_errors_text)
+
+    if not previous_errors:
+        st.warning(
+            "Enter at least one previous forecast error "
+            "to calculate deviation correction."
         )
 
     else:
-        prediction_col = st.selectbox(
-            "Forecast column",
-            prediction_candidates,
-            key="correction_prediction_col"
-        )
+        errors = np.asarray(previous_errors, dtype=float)
 
-        actual_col = None
+        # A. DEVIATION CORRECTION
+        # Average of the previous forecast errors.
+        deviation_correction = float(np.mean(errors))
 
-        if actual_candidates:
-            actual_choice = st.selectbox(
-                "Actual consumption column",
-                ["Not available"] + actual_candidates,
-                key="correction_actual_col"
-            )
+        # B. TREND CORRECTION
+        # Estimate whether the historical errors are increasing
+        # or decreasing. At least two values are required.
+        if len(errors) >= 2:
+            x = np.arange(len(errors), dtype=float)
 
-            if actual_choice != "Not available":
-                actual_col = actual_choice
+            slope, intercept = np.polyfit(x, errors, 1)
 
-        date_col = None
-
-        if date_candidates:
-            date_choice = st.selectbox(
-                "Date/time column",
-                ["No date column"] + date_candidates,
-                key="correction_date_col"
-            )
-
-            if date_choice != "No date column":
-                date_col = date_choice
-
-        result = correction_data.copy()
-
-        result["Original_Forecast"] = pd.to_numeric(
-            result[prediction_col],
-            errors="coerce"
-        )
-
-        if date_col is not None:
-            result[date_col] = pd.to_datetime(
-                result[date_col],
-                errors="coerce"
-            )
-
-            result = (
-                result.sort_values(date_col, na_position="last")
-                .reset_index(drop=True)
-            )
-
-        result["Deviation_Correction"] = 0.0
-        result["Trend_Correction"] = 0.0
-        result["Weekend_Correction"] = 0.0
-
-        result["Corrected_Forecast"] = (
-            result["Original_Forecast"]
-        )
-
-        if actual_col is None:
-            st.warning(
-                "Actual consumption values are missing. "
-                "The app cannot calculate real historical forecast "
-                "errors. Upload data containing both actual and "
-                "predicted consumption to enable error correction."
-            )
-
+            trend_correction = float(slope)
         else:
-            result["Actual_Consumption"] = pd.to_numeric(
-                result[actual_col],
-                errors="coerce"
+            trend_correction = 0.0
+
+        # C. WEEKEND CORRECTION
+        # Average of previously supplied weekend errors.
+        if is_weekend and weekend_errors:
+            weekend_correction = float(
+                np.mean(weekend_errors)
+            )
+        else:
+            weekend_correction = 0.0
+
+        # D. COMBINE CORRECTIONS
+        total_correction = (
+            deviation_correction
+            + trend_correction
+            + weekend_correction
+        )
+
+        corrected_forecast = max(
+            0.0,
+            original_forecast + total_correction
+        )
+
+        # Current actual value is used only for evaluation.
+        # It is NOT used to correct its own forecast.
+        current_forecast_error = (
+            actual_consumption - original_forecast
+        )
+
+        original_absolute_error = abs(
+            actual_consumption - original_forecast
+        )
+
+        corrected_absolute_error = abs(
+            actual_consumption - corrected_forecast
+        )
+
+        if original_absolute_error > 0:
+            improvement_percent = (
+                (
+                    original_absolute_error
+                    - corrected_absolute_error
+                )
+                / original_absolute_error
+            ) * 100
+        else:
+            improvement_percent = 0.0
+
+        # -------------------------------------------------
+        # DISPLAY ACTUAL CALCULATED VALUES
+        # -------------------------------------------------
+
+        st.divider()
+        st.subheader("3. Calculated Correction Values")
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "Deviation Correction",
+            f"{deviation_correction:.4f}"
+        )
+
+        col2.metric(
+            "Trend Correction",
+            f"{trend_correction:.4f}"
+        )
+
+        col3.metric(
+            "Weekend Correction",
+            f"{weekend_correction:.4f}"
+        )
+
+        st.subheader("4. Final Forecast Calculation")
+
+        st.write(
+            f"**Original forecast:** "
+            f"{original_forecast:.4f}"
+        )
+
+        st.write(
+            f"**Deviation correction:** "
+            f"{deviation_correction:.4f}"
+        )
+
+        st.write(
+            f"**Trend correction:** "
+            f"{trend_correction:.4f}"
+        )
+
+        st.write(
+            f"**Weekend correction:** "
+            f"{weekend_correction:.4f}"
+        )
+
+        st.write(
+            f"**Total correction:** "
+            f"{total_correction:.4f}"
+        )
+
+        st.success(
+            f"Corrected forecast = {corrected_forecast:.4f}"
+        )
+
+        # -------------------------------------------------
+        # EVALUATION
+        # -------------------------------------------------
+
+        st.subheader("5. Forecast Error Evaluation")
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "Current Forecast Error",
+            f"{current_forecast_error:.4f}"
+        )
+
+        col2.metric(
+            "Original Absolute Error",
+            f"{original_absolute_error:.4f}"
+        )
+
+        col3.metric(
+            "Corrected Absolute Error",
+            f"{corrected_absolute_error:.4f}"
+        )
+
+        st.metric(
+            "Absolute Error Improvement (%)",
+            f"{improvement_percent:.2f}%"
+        )
+
+        if corrected_absolute_error < original_absolute_error:
+            st.success(
+                "The corrected forecast is closer to the "
+                "entered actual value for this example."
+            )
+        elif corrected_absolute_error > original_absolute_error:
+            st.warning(
+                "The correction increased the error for this example."
+            )
+        else:
+            st.info(
+                "The absolute error did not change for this example."
             )
 
-            result["Forecast_Error"] = (
-                result["Actual_Consumption"]
-                - result["Original_Forecast"]
-            )
+        # -------------------------------------------------
+        # F. RESULTS TABLE AND CHART
+        # -------------------------------------------------
 
-            valid_error_count = (
-                result["Forecast_Error"].notna().sum()
-            )
-
-            if valid_error_count < 3:
-                st.warning(
-                    "At least 3 rows with actual and predicted values "
-                    "are recommended for correction."
-                )
-
-            else:
-                # A. DEVIATION CORRECTION
-                # Uses previous errors only.
-                previous_errors = (
-                    result["Forecast_Error"].shift(1)
-                )
-
-                result["Deviation_Correction"] = (
-                    previous_errors
-                    .rolling(window=24, min_periods=3)
-                    .mean()
-                    .fillna(0)
-                )
-
-                # B. TREND CORRECTION
-                # Estimates the trend in historical forecast errors.
-                def calculate_error_trend(values):
-                    values = np.asarray(values, dtype=float)
-                    values = values[np.isfinite(values)]
-
-                    if len(values) < 5:
-                        return 0.0
-
-                    x = np.arange(len(values))
-                    slope = np.polyfit(x, values, 1)[0]
-
-                    return float(slope)
-
-                trend_values = []
-
-                for i in range(len(result)):
-                    start = max(0, i - 24)
-
-                    past_errors = (
-                        result["Forecast_Error"]
-                        .iloc[start:i]
-                        .dropna()
-                    )
-
-                    trend_values.append(
-                        calculate_error_trend(past_errors)
-                    )
-
-                result["Trend_Correction"] = trend_values
-
-                # C. WEEKEND CORRECTION
-                # Uses previous weekend errors only.
-                if date_col is not None:
-                    is_weekend = (
-                        result[date_col].dt.dayofweek >= 5
-                    )
-
-                    weekend_errors = (
-                        result["Forecast_Error"].where(is_weekend)
-                    )
-
-                    result["Weekend_Correction"] = (
-                        weekend_errors
-                        .shift(1)
-                        .expanding(min_periods=3)
-                        .mean()
-                        .fillna(0)
-                    )
-
-                # D. COMBINE CORRECTIONS
-                result["Corrected_Forecast"] = (
-                    result["Original_Forecast"]
-                    + result["Deviation_Correction"]
-                    + result["Trend_Correction"]
-                    + result["Weekend_Correction"]
-                ).clip(lower=0)
-
-                st.success(
-                    "Deviation, error-trend and available "
-                    "weekend corrections have been calculated."
-                )
-
-                # E. EVALUATE ORIGINAL AND CORRECTED FORECASTS
-                evaluation = result.dropna(
-                    subset=[
-                        "Actual_Consumption",
-                        "Original_Forecast",
-                        "Corrected_Forecast"
-                    ]
-                )
-
-                if not evaluation.empty:
-                    original_mae = np.mean(
-                        np.abs(
-                            evaluation["Actual_Consumption"]
-                            - evaluation["Original_Forecast"]
-                        )
-                    )
-
-                    corrected_mae = np.mean(
-                        np.abs(
-                            evaluation["Actual_Consumption"]
-                            - evaluation["Corrected_Forecast"]
-                        )
-                    )
-
-                    col1, col2, col3 = st.columns(3)
-
-                    col1.metric(
-                        "Original MAE",
-                        f"{original_mae:.4f}"
-                    )
-
-                    col2.metric(
-                        "Corrected MAE",
-                        f"{corrected_mae:.4f}"
-                    )
-
-                    improvement = (
-                        (original_mae - corrected_mae)
-                        / original_mae * 100
-                        if original_mae > 0 else 0
-                    )
-
-                    col3.metric(
-                        "MAE Improvement (%)",
-                        f"{improvement:.2f}%"
-                    )
-
-                    if corrected_mae < original_mae:
-                        st.success(
-                            "Correction reduced the MAE on these rows."
-                        )
-
-                    else:
-                        st.warning(
-                            "Correction did not improve MAE on these rows. "
-                            "Validate it using a separate test dataset."
-                        )
-
-        # F. DISPLAY CORRECTION RESULTS
-        st.subheader("Forecast Correction Results")
-
-        display_cols = [
-            c for c in [
-                date_col,
-                "Actual_Consumption",
-                "Original_Forecast",
-                "Forecast_Error",
-                "Deviation_Correction",
-                "Trend_Correction",
-                "Weekend_Correction",
-                "Corrected_Forecast"
+        results = pd.DataFrame({
+            "Measurement": [
+                "Original Forecast",
+                "Deviation Correction",
+                "Trend Correction",
+                "Weekend Correction",
+                "Total Correction",
+                "Corrected Forecast",
+                "Actual Consumption",
+                "Current Forecast Error",
+                "Original Absolute Error",
+                "Corrected Absolute Error"
+            ],
+            "Calculated_Value": [
+                original_forecast,
+                deviation_correction,
+                trend_correction,
+                weekend_correction,
+                total_correction,
+                corrected_forecast,
+                actual_consumption,
+                current_forecast_error,
+                original_absolute_error,
+                corrected_absolute_error
             ]
-            if c is not None and c in result.columns
-        ]
+        })
+
+        st.subheader("Calculated Results Table")
 
         st.dataframe(
-            result[display_cols],
-            use_container_width=True
+            results.round(4),
+            use_container_width=True,
+            hide_index=True
         )
 
-        st.subheader("Original Forecast vs Corrected Forecast")
+        st.subheader("Forecast Comparison")
 
-        chart_data = result[
-            ["Original_Forecast", "Corrected_Forecast"]
-        ].copy()
+        comparison_chart = pd.DataFrame({
+            "Energy Consumption": [
+                original_forecast,
+                corrected_forecast,
+                actual_consumption
+            ]
+        }, index=[
+            "Original Forecast",
+            "Corrected Forecast",
+            "Actual Consumption"
+        ])
 
-        if date_col is not None:
-            chart_data.index = result[date_col]
+        st.bar_chart(comparison_chart)
 
-        st.line_chart(chart_data)
-
-        if "Actual_Consumption" in result.columns:
-            actual_chart = result[
-                [
-                    "Actual_Consumption",
-                    "Original_Forecast",
-                    "Corrected_Forecast"
-                ]
-            ].copy()
-
-            if date_col is not None:
-                actual_chart.index = result[date_col]
-
-            st.subheader("Actual vs Original vs Corrected")
-            st.line_chart(actual_chart)
+        # -------------------------------------------------
+        # G. DOWNLOAD RESULTS
+        # -------------------------------------------------
 
         st.download_button(
-            "Download Corrected Forecast CSV",
-            data=result.to_csv(index=False).encode("utf-8"),
+            "Download Correction Results",
+            data=results.to_csv(index=False).encode("utf-8"),
             file_name="corrected_energy_forecast.csv",
             mime="text/csv",
-            key="download_actual_corrected_forecast"
+            key="download_manual_correction_results"
         )
 
+except ValueError:
+    st.error(
+        "Invalid input. Enter numeric values separated by commas, "
+        "for example: 15, 10, 5."
+    )
 
-# ==================================================
-# END OF APPLICATION
-# ==================================================
+# =========================================================
+# END OF FORECAST CORRECTION SECTION
+# =========================================================
+
+
+
+
+
