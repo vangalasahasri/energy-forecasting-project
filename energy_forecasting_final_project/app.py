@@ -608,23 +608,20 @@ if st.button("Run 2-out-of-3 Voting", type="primary"):
         st.error(str(error))
 
 
-# =====================================================
-# 9. ACTUAL FORECAST CORRECTION IMPLEMENTATION
-# =====================================================
+
 # =========================================================
-# 9. WORKING FORECAST CORRECTION WITH USER INPUTS
+# 9. ACTUAL FORECAST CORRECTION IMPLEMENTATION
 # =========================================================
 
 st.header("7. Corrected Energy Forecast")
 
 st.write(
-    "Enter your forecast and historical error values. "
-    "The application will calculate each correction and "
-    "the final corrected forecast."
+    "Enter forecast values and historical errors to calculate "
+    "deviation, trend, weekend, and holiday corrections."
 )
 
 # ---------------------------------------------------------
-# INPUT 1: CURRENT FORECAST VALUES
+# 1. INPUT VALUES
 # ---------------------------------------------------------
 
 st.subheader("1. Enter Forecast Values")
@@ -637,58 +634,74 @@ with col1:
         min_value=0.0,
         value=100.0,
         step=1.0,
-        key="correction_original_forecast"
+        key="s9_original_forecast"
     )
 
 with col2:
     actual_consumption = st.number_input(
-        "Actual energy consumption (optional, for evaluation)",
+        "Actual energy consumption",
         min_value=0.0,
         value=120.0,
         step=1.0,
-        key="correction_actual_consumption"
+        key="s9_actual_consumption"
     )
 
 # ---------------------------------------------------------
-# INPUT 2: HISTORICAL FORECAST ERRORS
+# 2. HISTORICAL ERROR INPUTS
 # ---------------------------------------------------------
 
-st.subheader("2. Enter Previous Forecast Errors")
-
-st.write(
-    "Enter previous forecast errors separated by commas. "
-    "Calculate each error as Actual Consumption minus "
-    "Predicted Consumption."
-)
+st.subheader("2. Enter Historical Forecast Errors")
 
 previous_errors_text = st.text_input(
-    "Previous errors",
+    "Previous forecast errors",
     value="15, 10, 5",
-    key="previous_forecast_errors",
-    help="Example: 15, 10, 5, -2, 4"
+    key="s9_previous_errors",
+    help="Enter actual minus predicted values, separated by commas."
 )
 
 weekend_errors_text = st.text_input(
-    "Previous weekend errors (optional)",
+    "Previous weekend errors",
     value="8, 6, 4",
-    key="previous_weekend_errors",
-    help="Example: 8, 6, 4"
+    key="s9_weekend_errors"
 )
 
-is_weekend = st.checkbox(
-    "Apply weekend-specific correction",
-    value=False,
-    key="apply_weekend_correction"
+holiday_errors_text = st.text_input(
+    "Previous holiday errors",
+    value="12, 8, 10",
+    key="s9_holiday_errors"
 )
 
+col3, col4 = st.columns(2)
+
+with col3:
+    is_weekend = st.checkbox(
+        "Is the forecast date a weekend?",
+        value=False,
+        key="s9_is_weekend"
+    )
+
+with col4:
+    is_holiday = st.checkbox(
+        "Is the forecast date a holiday?",
+        value=False,
+        key="s9_is_holiday"
+    )
+
+holiday_coefficient = st.number_input(
+    "Holiday coefficient",
+    min_value=0.0,
+    max_value=5.0,
+    value=1.0,
+    step=0.1,
+    key="s9_holiday_coefficient",
+    help="This is a user-entered coefficient, not automatically learned."
+)
 
 # ---------------------------------------------------------
-# INPUT VALIDATION
+# 3. CONVERT INPUTS INTO NUMBERS
 # ---------------------------------------------------------
 
-def parse_errors(text_value):
-    """Convert comma-separated error values into a numeric list."""
-
+def parse_error_values(text_value):
     if not text_value.strip():
         return []
 
@@ -697,68 +710,105 @@ def parse_errors(text_value):
     for item in text_value.split(","):
         item = item.strip()
 
-        if not item:
-            continue
+        if item:
+            number = float(item)
 
-        value = float(item)
+            if not np.isfinite(number):
+                raise ValueError(
+                    "Enter only finite numeric error values."
+                )
 
-        if not np.isfinite(value):
-            raise ValueError(
-                "Please enter only finite numeric error values."
-            )
-
-        values.append(value)
+            values.append(number)
 
     return values
 
 
-# ---------------------------------------------------------
-# CALCULATE CORRECTIONS
-# ---------------------------------------------------------
-
 try:
-    previous_errors = parse_errors(previous_errors_text)
-    weekend_errors = parse_errors(weekend_errors_text)
+    previous_errors = parse_error_values(
+        previous_errors_text
+    )
 
-    if not previous_errors:
+    weekend_errors = parse_error_values(
+        weekend_errors_text
+    )
+
+    holiday_errors = parse_error_values(
+        holiday_errors_text
+    )
+
+    if len(previous_errors) == 0:
         st.warning(
-            "Enter at least one previous forecast error "
-            "to calculate deviation correction."
+            "Enter at least one previous forecast error."
         )
 
     else:
-        errors = np.asarray(previous_errors, dtype=float)
+        # -------------------------------------------------
+        # 4. DEVIATION CORRECTION
+        # -------------------------------------------------
 
-        # A. DEVIATION CORRECTION
-        # Average of the previous forecast errors.
-        deviation_correction = float(np.mean(errors))
+        deviation_correction = float(
+            np.mean(previous_errors)
+        )
 
-        # B. TREND CORRECTION
-        # Estimate whether the historical errors are increasing
-        # or decreasing. At least two values are required.
-        if len(errors) >= 2:
-            x = np.arange(len(errors), dtype=float)
+        # -------------------------------------------------
+        # 5. TREND CORRECTION
+        # -------------------------------------------------
 
-            slope, intercept = np.polyfit(x, errors, 1)
+        if len(previous_errors) >= 2:
+            x = np.arange(
+                len(previous_errors),
+                dtype=float
+            )
 
-            trend_correction = float(slope)
+            slope, intercept = np.polyfit(
+                x,
+                np.asarray(previous_errors, dtype=float),
+                1
+            )
+
+            # Estimate the next error using the fitted trend.
+            trend_correction = float(
+                slope * len(previous_errors) + intercept
+            )
         else:
             trend_correction = 0.0
 
-        # C. WEEKEND CORRECTION
-        # Average of previously supplied weekend errors.
-        if is_weekend and weekend_errors:
+        # -------------------------------------------------
+        # 6. WEEKEND CORRECTION
+        # -------------------------------------------------
+
+        if is_weekend and len(weekend_errors) > 0:
             weekend_correction = float(
                 np.mean(weekend_errors)
             )
         else:
             weekend_correction = 0.0
 
-        # D. COMBINE CORRECTIONS
+        # -------------------------------------------------
+        # 7. HOLIDAY COEFFICIENT CORRECTION
+        # -------------------------------------------------
+
+        if is_holiday and len(holiday_errors) > 0:
+            holiday_error_mean = float(
+                np.mean(holiday_errors)
+            )
+
+            holiday_correction = (
+                holiday_coefficient * holiday_error_mean
+            )
+        else:
+            holiday_error_mean = 0.0
+            holiday_correction = 0.0
+
+        # -------------------------------------------------
+        # 8. CALCULATE FINAL CORRECTED FORECAST
+        # -------------------------------------------------
+
         total_correction = (
             deviation_correction
             + trend_correction
             + weekend_correction
+            + holiday_correction
         )
 
         corrected_forecast = max(
@@ -766,8 +816,8 @@ try:
             original_forecast + total_correction
         )
 
-        # Current actual value is used only for evaluation.
-        # It is NOT used to correct its own forecast.
+        # Actual consumption is used for evaluation only.
+        # It is not used to calculate its own forecast correction.
         current_forecast_error = (
             actual_consumption - original_forecast
         )
@@ -792,79 +842,94 @@ try:
             improvement_percent = 0.0
 
         # -------------------------------------------------
-        # DISPLAY ACTUAL CALCULATED VALUES
+        # 9. DISPLAY CALCULATED CORRECTION VALUES
         # -------------------------------------------------
 
         st.divider()
-        st.subheader("3. Calculated Correction Values")
+        st.subheader("Calculated Correction Values")
 
-        col1, col2, col3 = st.columns(3)
+        c1, c2 = st.columns(2)
+        c3, c4 = st.columns(2)
 
-        col1.metric(
+        c1.metric(
             "Deviation Correction",
             f"{deviation_correction:.4f}"
         )
 
-        col2.metric(
+        c2.metric(
             "Trend Correction",
             f"{trend_correction:.4f}"
         )
 
-        col3.metric(
+        c3.metric(
             "Weekend Correction",
             f"{weekend_correction:.4f}"
         )
 
-        st.subheader("4. Final Forecast Calculation")
+        c4.metric(
+            "Holiday Correction",
+            f"{holiday_correction:.4f}"
+        )
+
+        st.metric(
+            "Holiday Coefficient",
+            f"{holiday_coefficient:.2f}"
+        )
+
+        # -------------------------------------------------
+        # 10. SHOW CALCULATION
+        # -------------------------------------------------
+
+        st.subheader("Final Forecast Calculation")
 
         st.write(
-            f"**Original forecast:** "
-            f"{original_forecast:.4f}"
+            f"Original forecast: {original_forecast:.4f}"
         )
 
         st.write(
-            f"**Deviation correction:** "
+            f"Deviation correction: "
             f"{deviation_correction:.4f}"
         )
 
         st.write(
-            f"**Trend correction:** "
-            f"{trend_correction:.4f}"
+            f"Trend correction: {trend_correction:.4f}"
         )
 
         st.write(
-            f"**Weekend correction:** "
-            f"{weekend_correction:.4f}"
+            f"Weekend correction: {weekend_correction:.4f}"
         )
 
         st.write(
-            f"**Total correction:** "
-            f"{total_correction:.4f}"
+            f"Holiday correction: {holiday_correction:.4f}"
+        )
+
+        st.write(
+            f"Total correction: {total_correction:.4f}"
         )
 
         st.success(
-            f"Corrected forecast = {corrected_forecast:.4f}"
+            f"Corrected forecast: {corrected_forecast:.4f}"
         )
 
         # -------------------------------------------------
-        # EVALUATION
+        # 11. EVALUATE FORECAST ERROR
         # -------------------------------------------------
 
-        st.subheader("5. Forecast Error Evaluation")
+        st.subheader("Forecast Error Evaluation")
 
-        col1, col2, col3 = st.columns(3)
+        e1, e2, e3 = st.columns(3)
 
-        col1.metric(
+        e1.metric(
             "Current Forecast Error",
             f"{current_forecast_error:.4f}"
         )
 
-        col2.metric(
+        e2.metric(
             "Original Absolute Error",
             f"{original_absolute_error:.4f}"
         )
 
-        col3.metric(
+        e3.metric(
             "Corrected Absolute Error",
             f"{corrected_absolute_error:.4f}"
         )
@@ -876,8 +941,8 @@ try:
 
         if corrected_absolute_error < original_absolute_error:
             st.success(
-                "The corrected forecast is closer to the "
-                "entered actual value for this example."
+                "The corrected forecast is closer to the entered "
+                "actual value for this example."
             )
         elif corrected_absolute_error > original_absolute_error:
             st.warning(
@@ -885,11 +950,11 @@ try:
             )
         else:
             st.info(
-                "The absolute error did not change for this example."
+                "The absolute error did not change."
             )
 
         # -------------------------------------------------
-        # F. RESULTS TABLE AND CHART
+        # 12. RESULTS TABLE
         # -------------------------------------------------
 
         results = pd.DataFrame({
@@ -898,6 +963,8 @@ try:
                 "Deviation Correction",
                 "Trend Correction",
                 "Weekend Correction",
+                "Holiday Correction",
+                "Holiday Coefficient",
                 "Total Correction",
                 "Corrected Forecast",
                 "Actual Consumption",
@@ -910,6 +977,8 @@ try:
                 deviation_correction,
                 trend_correction,
                 weekend_correction,
+                holiday_correction,
+                holiday_coefficient,
                 total_correction,
                 corrected_forecast,
                 actual_consumption,
@@ -927,9 +996,11 @@ try:
             hide_index=True
         )
 
-        st.subheader("Forecast Comparison")
+        # -------------------------------------------------
+        # 13. FORECAST COMPARISON CHART
+        # -------------------------------------------------
 
-        comparison_chart = pd.DataFrame({
+        chart_data = pd.DataFrame({
             "Energy Consumption": [
                 original_forecast,
                 corrected_forecast,
@@ -941,31 +1012,28 @@ try:
             "Actual Consumption"
         ])
 
-        st.bar_chart(comparison_chart)
+        st.subheader("Forecast Comparison")
+        st.bar_chart(chart_data)
 
         # -------------------------------------------------
-        # G. DOWNLOAD RESULTS
+        # 14. DOWNLOAD RESULTS
         # -------------------------------------------------
 
         st.download_button(
-            "Download Correction Results",
+            "Download Correction Results CSV",
             data=results.to_csv(index=False).encode("utf-8"),
             file_name="corrected_energy_forecast.csv",
             mime="text/csv",
-            key="download_manual_correction_results"
+            key="s9_download_results"
         )
 
-except ValueError:
+except (ValueError, TypeError):
     st.error(
-        "Invalid input. Enter numeric values separated by commas, "
+        "Invalid input. Enter numeric errors separated by commas, "
         "for example: 15, 10, 5."
     )
 
 # =========================================================
-# END OF FORECAST CORRECTION SECTION
+# END OF SECTION 9
 # =========================================================
-
-
-
-
 
